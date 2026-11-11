@@ -1,9 +1,12 @@
 # Runs the kit's workflow in an isolated n8n (its own user folder; your real n8n is not touched),
 # twice, in mock mode, then verifies the audit log and checks that tampering is caught.
 # Prints one JSON line with the results; exit code 0 = all checks passed.
+# -Gallery runs the n8n template gallery version instead, with its log path set ONLY in the Settings node
+# (the AUDIT_LOG_PATH and AUDIT_MOCK_LLM variables are removed), so the run proves Settings drives the workflow.
 param(
   [string]$Python = "python",
-  [string]$Sandbox = (Join-Path ([IO.Path]::GetTempPath()) "n8n-kit-test")
+  [string]$Sandbox = (Join-Path ([IO.Path]::GetTempPath()) "n8n-kit-test"),
+  [switch]$Gallery
 )
 $ErrorActionPreference = "Continue"
 $root = Split-Path $PSScriptRoot -Parent
@@ -17,12 +20,22 @@ $env:N8N_RESTRICT_FILE_ACCESS_TO = "$Sandbox\audit"
 $env:N8N_BLOCK_ENV_ACCESS_IN_NODE = "false"
 $env:N8N_DIAGNOSTICS_ENABLED = "false"
 
-$result = [ordered]@{ n8n = (n8n --version 2>$null | Select-Object -First 1) }
-n8n import:workflow --input "$root\kit\workflow\verifiable-lead-triage.json" *> "$Sandbox\import.log"
+$result = [ordered]@{ n8n = (n8n --version 2>$null | Select-Object -First 1); variant = $(if ($Gallery) { "gallery" } else { "kit" }) }
+$wfFile = "$root\kit\workflow\verifiable-lead-triage.json"; $wfId = "vltAuditKit00001"
+if ($Gallery) {
+  $wfId = "vltAuditKitGal01"
+  $wf = Get-Content "$root\kit\gallery\verifiable-lead-triage.gallery.json" -Raw | ConvertFrom-Json
+  ($wf.nodes | Where-Object name -eq "Settings").parameters.assignments.assignments |
+    Where-Object name -eq "audit_log_path" | ForEach-Object { $_.value = ($log -replace '\\', '/') }
+  $wfFile = "$Sandbox\gallery-under-test.json"
+  $wf | ConvertTo-Json -Depth 30 | Set-Content $wfFile -Encoding utf8
+  Remove-Item Env:AUDIT_LOG_PATH, Env:AUDIT_MOCK_LLM -ErrorAction SilentlyContinue
+}
+n8n import:workflow --input $wfFile *> "$Sandbox\import.log"
 $result.import_ok = ($LASTEXITCODE -eq 0)
 $runs = @()
 foreach ($i in 1..2) {
-  $out = n8n execute --id vltAuditKit00001 --rawOutput 2> "$Sandbox\run$i.err"
+  $out = n8n execute --id $wfId --rawOutput 2> "$Sandbox\run$i.err"
   $runs += [ordered]@{ exit = $LASTEXITCODE; out = (($out | Out-String).Trim()) }
 }
 $result.runs = $runs

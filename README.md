@@ -14,6 +14,7 @@ An n8n workflow that sorts incoming B2B leads with an AI model (or simple rules)
 | `kit/samples/` | Demo logs: one intact, one with an edited entry |
 | `kit/src/seal.js` | The hashing code used inside the workflow, for review |
 | `kit/README.md` | Setup guide (about 10 minutes) |
+| `kit/gallery/verifiable-lead-triage.gallery.json` | The same workflow in n8n template-gallery form: settings in an Edit Fields node, overview and section notes |
 
 ## Try the verifier in 30 seconds
 
@@ -27,6 +28,10 @@ The first prints `INTACT`. The second reports `line 5: hash does not match the e
 ## Use it
 
 Follow [kit/README.md](kit/README.md): import the workflow, set the log path, run it once in mock mode (no model needed), then verify the log. Any OpenAI-compatible model works for real triage, including local ones (Ollama, LM Studio).
+
+## Gallery version
+
+`kit/gallery/verifiable-lead-triage.gallery.json` runs the same logic, but every value you need to change sits in one **Settings** (Edit Fields) node, and sticky notes explain each section. Environment variables (`AUDIT_LOG_PATH`, `AUDIT_MOCK_LLM`, `AUDIT_LLM_BASE_URL`, `AUDIT_LLM_MODEL`, `AUDIT_LLM_API_KEY`) still override it; API keys belong in the environment, never in the workflow. It is tested with a real n8n run in which the log path comes only from the Settings node (`tests/sandbox_n8n.ps1 -Gallery`).
 
 ## Limits
 

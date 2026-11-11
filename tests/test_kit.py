@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -108,3 +109,41 @@ def test_workflow_embeds_current_seal_code():
         for out in conn["main"]:
             for c in out:
                 assert c["node"] in names
+
+
+# ---------- n8n template gallery version ----------
+GALLERY = KIT / "gallery" / "verifiable-lead-triage.gallery.json"
+
+
+def test_gallery_matches_a_fresh_build():
+    sys.path.insert(0, str(KIT.parent))
+    import build_workflow
+
+    assert json.loads(GALLERY.read_text(encoding="utf-8")) == build_workflow.build_gallery()
+
+
+def test_gallery_follows_n8n_submission_rules():
+    wf = json.loads(GALLERY.read_text(encoding="utf-8"))
+    nodes = {n["name"]: n for n in wf["nodes"]}
+    # user-editable values live in an Edit Fields (Set) node that every trigger passes through
+    assert nodes["Settings"]["type"] == "n8n-nodes-base.set"
+    fields = {a["name"]: a["value"] for a in nodes["Settings"]["parameters"]["assignments"]["assignments"]}
+    assert set(fields) == {"audit_log_path", "llm_base_url", "llm_model", "mock_llm"} and fields["mock_llm"] is True
+    for trig in ("Run with sample lead", "Lead webhook"):
+        assert wf["connections"][trig]["main"][0][0]["node"] == "Settings"
+    assert wf["connections"]["Settings"]["main"][0][0]["node"] == "Prepare"
+    # an overview sticky note plus section notes
+    stickies = [n for n in wf["nodes"] if n["type"] == "n8n-nodes-base.stickyNote"]
+    overview = nodes["Overview"]["parameters"]["content"]
+    assert len(stickies) >= 4
+    for must in ("Setup", "Self-hosted n8n", "does not prevent", "AI assistance", "github.com/richter83-star"):
+        assert must in overview
+    # no secrets or personal data anywhere in the template
+    text = json.dumps(wf)
+    assert "llm_api_key: ''" in nodes["Prepare"]["parameters"]["jsCode"]  # the key stays empty; it comes from the environment
+    for pattern in (r"sk-[A-Za-z0-9]{10,}", r"Bearer [A-Za-z0-9]{10,}", r"[\w.+-]+@[\w-]+\.[\w.]+", r"https?://[^\s\"]*webhook[^\s\"]*"):
+        assert not re.search(pattern, text), pattern
+    # Settings values are read, and environment variables still win
+    prep = nodes["Prepare"]["parameters"]["jsCode"]
+    assert prep.index("const st = ") < prep.index("$env.AUDIT_LLM_API_KEY") < prep.index("// n8n reads files with glob")
+    assert all(n["type"].startswith("n8n-nodes-base.") for n in wf["nodes"])

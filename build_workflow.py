@@ -204,3 +204,88 @@ def build_viewer() -> None:
 
 if __name__ == "__main__":
     build_viewer()
+
+
+# ---------- n8n template gallery version (same logic, settings in an Edit Fields node, sticky notes) ----------
+GALLERY_OUT = HERE / "kit" / "gallery" / "verifiable-lead-triage.gallery.json"
+REPO = "https://github.com/richter83-star/verifiable-lead-triage-n8n"
+SETTINGS_FIELDS = [("audit_log_path", "audit/lead-triage.jsonl", "string"),
+                   ("llm_base_url", "http://127.0.0.1:11434/v1", "string"),
+                   ("llm_model", "qwen3.5:9b", "string"),
+                   ("mock_llm", True, "boolean")]
+SETTINGS_READ = """// Values from the Settings node (Edit Fields) override the defaults above; environment variables still win.
+const st = ($input.first() && $input.first().json) || {};
+for (const k of ['audit_log_path', 'llm_base_url', 'llm_model']) if (typeof st[k] === 'string' && st[k]) CONFIG[k] = st[k];
+if (typeof st.mock_llm === 'boolean') CONFIG.mock_llm = st.mock_llm;
+try {
+  if ($env.AUDIT_LOG_PATH) CONFIG.audit_log_path = $env.AUDIT_LOG_PATH;
+  if ($env.AUDIT_MOCK_LLM) CONFIG.mock_llm = $env.AUDIT_MOCK_LLM === 'true';
+  if ($env.AUDIT_LLM_BASE_URL) CONFIG.llm_base_url = $env.AUDIT_LLM_BASE_URL;
+  if ($env.AUDIT_LLM_MODEL) CONFIG.llm_model = $env.AUDIT_LLM_MODEL;
+  if ($env.AUDIT_LLM_API_KEY) CONFIG.llm_api_key = $env.AUDIT_LLM_API_KEY;
+} catch (e) {}
+"""
+STICKY_OVERVIEW = f"""## Triage B2B leads with an LLM and keep a tamper-evident audit log
+
+**Who it's for:** teams that let a model sort inbound leads and need a record of what it decided that shows later edits.
+
+**What it does**
+1. A lead arrives by webhook, or click *Test workflow* to use the built-in sample lead.
+2. *Classify lead* labels it hot, warm or cold with a score and one-line reason, using any OpenAI-compatible model (Ollama, LM Studio, OpenAI) or simple rules.
+3. The lead is routed to a queue: sales_now, nurture, archive, or human_review if the model reply is unusable.
+4. Three entries are appended to a JSONL file. Each holds the SHA-256 hash of the entry before it, so editing, deleting or reordering a past entry breaks the chain.
+
+**Setup (about 10 minutes)**
+1. Open **Settings** and set `audit_log_path` to an absolute path in a folder that exists.
+2. Keep `mock_llm` on for the first run, then click *Test workflow*.
+3. Check the log with the verifier from {REPO} (`python verify_audit.py <log>` prints INTACT or the changed line).
+4. Turn `mock_llm` off and set `llm_base_url` and `llm_model` for a real model. For hosted APIs, set the key in the environment variable `AUDIT_LLM_API_KEY`, never in the workflow.
+
+**Requirements and limits**
+- Self-hosted n8n 1.x: it writes a file on disk, which n8n Cloud does not allow.
+- Detects changes; does not prevent them. A full rewrite can carry a new valid chain, so keep a copy of the head hash elsewhere.
+- Records what the model decided, not whether it was right. Not a compliance certification.
+
+Built with AI assistance (Claude and a local Qwen model); tested on n8n 1.122.4. Apache-2.0."""
+STICKY_SETTINGS = "### 1. Edit here\n**Settings** holds every value you need to change. Environment variables (`AUDIT_LOG_PATH`, `AUDIT_MOCK_LLM`) override it for automation."
+STICKY_MODEL = "### 2. Decide\n*Prepare* builds the run, *Classify lead* asks the model (or the rules in mock mode). Lead text is passed to the model as data, never as instructions."
+STICKY_LOG = "### 3. Seal and append\nReads the log's last entry, chains three new entries to it, and appends them. Two runs finishing at the same moment can collide: use one worker for high volume."
+
+
+def build_gallery() -> dict:
+    wf = build()
+    by = {n["name"]: n for n in wf["nodes"]}
+    prep = by["Prepare"]["parameters"]["jsCode"]
+    marker = "// n8n reads files with glob patterns"
+    assert marker in prep
+    by["Prepare"]["parameters"]["jsCode"] = prep.replace(marker, SETTINGS_READ + marker, 1)
+    settings = node("b2e0d4c3-0002-4d2f-8b11-000000000010", "Settings", "n8n-nodes-base.set", 3.4, [240, 100], {
+        "mode": "manual", "includeOtherFields": True, "include": "all", "options": {},
+        "assignments": {"assignments": [{"id": f"b2e0d4c3-0002-4d2f-8b11-00000000002{i}", "name": k, "value": v, "type": t}
+                                        for i, (k, v, t) in enumerate(SETTINGS_FIELDS)]}})
+    for n in wf["nodes"]:
+        if n["name"] != "Run with sample lead" and n["name"] != "Lead webhook":
+            n["position"] = [n["position"][0] + 240, n["position"][1]]
+    stickies = [
+        node("b2e0d4c3-0002-4d2f-8b11-000000000031", "Overview", "n8n-nodes-base.stickyNote", 1, [-620, -220],
+             {"content": STICKY_OVERVIEW, "width": 560, "height": 860}),
+        node("b2e0d4c3-0002-4d2f-8b11-000000000032", "Note: settings", "n8n-nodes-base.stickyNote", 1, [180, -140],
+             {"content": STICKY_SETTINGS, "width": 260, "height": 220, "color": 4}),
+        node("b2e0d4c3-0002-4d2f-8b11-000000000033", "Note: decide", "n8n-nodes-base.stickyNote", 1, [460, -140],
+             {"content": STICKY_MODEL, "width": 460, "height": 220, "color": 5}),
+        node("b2e0d4c3-0002-4d2f-8b11-000000000034", "Note: seal", "n8n-nodes-base.stickyNote", 1, [940, -140],
+             {"content": STICKY_LOG, "width": 700, "height": 220, "color": 6}),
+    ]
+    wf["nodes"] = stickies + [settings] + wf["nodes"]
+    wf["connections"]["Run with sample lead"] = {"main": [[{"node": "Settings", "type": "main", "index": 0}]]}
+    wf["connections"]["Lead webhook"] = {"main": [[{"node": "Settings", "type": "main", "index": 0}]]}
+    wf["connections"]["Settings"] = {"main": [[{"node": "Prepare", "type": "main", "index": 0}]]}
+    wf.update({"id": "vltAuditKitGal01", "name": "Triage B2B leads with an LLM and keep a tamper-evident audit log",
+               "versionId": "7e1d3c5b-62a4-4f1e-8d7c-3b8a9f2e1d45"})
+    return wf
+
+
+if __name__ == "__main__":
+    GALLERY_OUT.parent.mkdir(parents=True, exist_ok=True)
+    GALLERY_OUT.write_text(json.dumps(build_gallery(), indent=2), encoding="utf-8")
+    print(f"wrote {GALLERY_OUT}")
